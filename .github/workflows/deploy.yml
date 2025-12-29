@@ -25,8 +25,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-2
 
+      - name: Package Lambda
+        run: zip lambda.zip lambda/handler.py lambda/model_config.json
+
       - name: Terraform Init
         run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan
 
       - name: Terraform Apply
         run: terraform apply -auto-approve

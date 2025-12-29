@@ -42,5 +42,6 @@ jobs:
           aws lambda invoke \
             --function-name ml-infer-free-tier-inference \
             --payload '{"features":[1.0,0.5,-0.2]}' \
+            --cli-binary-format raw-in-base64-out \
             response.json
           cat response.json

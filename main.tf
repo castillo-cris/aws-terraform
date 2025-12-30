@@ -4,6 +4,7 @@
 
 terraform {
   required_version = ">= 1.5.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -13,6 +14,14 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4.0"
     }
+  }
+
+  backend "s3" {
+    bucket         = "ml-infer-terraform-state"      # nombre del bucket S3
+    key            = "infra/terraform.tfstate"       # ruta/archivo dentro del bucket
+    region         = "us-east-2"                     # misma región que tus recursos
+    dynamodb_table = "ml-infer-terraform-locks"      # tabla DynamoDB para lock
+    encrypt        = true
   }
 }
 

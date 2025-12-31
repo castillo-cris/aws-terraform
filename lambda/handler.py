@@ -1,65 +1,68 @@
+# lambda/handler.py
 import json
 import math
 import os
+from pathlib import Path
 
-# Modelo logístico simple: y = sigmoid(b0 + sum(bi * xi))
-# Coeficientes cargados desde JSON para claridad y fácil actualización
-# Sin numpy ni sklearn; pura aritmética Python
-def load_model():
-    import pathlib
-    cfg_path = pathlib.Path(__file__).with_name("model_config.json")
-    try:
-        with cfg_path.open("r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        return cfg.get("bias", 0.0), cfg.get("weights", [])
-    except Exception:
-        # Fallback seguro: coeficientes mínimos
-        return 0.0, []
+BASE = Path(__file__).parent
 
-BIAS, WEIGHTS = load_model()
+def load_json(name):
+    p = BASE / name
+    if not p.exists():
+        return None
+    with p.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
-def sigmoid(z: float) -> float:
-    # Protección numérica simple
-    if z >= 0:
-        ez = math.exp(-z)
-        return 1.0 / (1.0 + ez)
-    else:
-        ez = math.exp(z)
-        return ez / (1.0 + ez)
+MODEL_TEMP = load_json("model_temp.json") or {}
+MODEL_CLASS = load_json("model_class.json") or {"enabled": False}
 
-def infer(features):
-    # features: lista de números (floats/ints)
-    # Longitud flexible; pesos extra se ignoran y faltantes se tratan como 0
-    total = BIAS
-    for i, w in enumerate(WEIGHTS):
-        x = 0.0
-        if i < len(features):
-            v = features[i]
-            # Validación básica
-            if isinstance(v, (int, float)):
-                x = float(v)
-            else:
-                # Si el valor no es numérico, se considera 0
-                x = 0.0
-        total += w * x
-    prob = sigmoid(total)
-    # Umbral fijo 0.5 para clasificación binaria
-    label = 1 if prob >= 0.5 else 0
-    return {"probability": prob, "label": label}
+def predict_temperature(city, temp, hum, pres, wind):
+    # Busca modelo de la ciudad, si no, usa default
+    per_city = MODEL_TEMP.get("per_city", {})
+    mdl = per_city.get(city, MODEL_TEMP.get("default", {"weights":[0,0,0,0], "bias":20.0}))
+    w = mdl.get("weights", [0,0,0,0])
+    b = mdl.get("bias", 20.0)
+    y = w[0]*temp + w[1]*hum + w[2]*pres + w[3]*wind + b
+    return y
 
-def response(status_code: int, body_dict: dict):
-    body_str = json.dumps(body_dict, ensure_ascii=False)
+def gaussian_logprob(x, mu, var):
+    # log N(x | mu, var)
+    return -0.5*math.log(2*math.pi*var) - 0.5*((x-mu)**2/var)
+
+def classify_weather(temp, hum, pres, wind):
+    if not MODEL_CLASS.get("enabled", False):
+        return {"enabled": False, "prediction": None, "probs": None}
+    model = MODEL_CLASS["model"]
+    classes = model["classes"]
+    priors = model["priors"]
+    means = model["means"]
+    vars_ = model["vars"]
+
+    scores = {}
+    feats = [temp, hum, pres, wind]
+    for c in classes:
+        score = math.log(max(priors.get(c, 1e-6), 1e-6))
+        mu = means[c]
+        var = vars_[c]
+        for i in range(4):
+            score += gaussian_logprob(feats[i], mu[i], var[i])
+        scores[c] = score
+    # Normalize to probabilities (softmax on log-scores)
+    maxs = max(scores.values())
+    exps = {c: math.exp(scores[c] - maxs) for c in scores}
+    Z = sum(exps.values())
+    probs = {c: exps[c]/Z for c in exps}
+    pred = max(probs, key=probs.get)
+    return {"enabled": True, "prediction": pred, "probs": probs}
+
+def response(status_code: int, body: dict):
     return {
         "statusCode": status_code,
-        "headers": {
-            "Content-Type": "application/json"
-        },
-        "body": body_str
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body, ensure_ascii=False)
     }
 
 def lambda_handler(event, context):
-    # API Gateway HTTP API (payload v2.0): el body puede ser string
-    log_level = os.environ.get("LOG_LEVEL", "INFO")
     try:
         body_raw = event.get("body", "")
         if isinstance(body_raw, str) and body_raw:
@@ -69,22 +72,37 @@ def lambda_handler(event, context):
         else:
             data = {}
 
-        features = data.get("features", [])
-        if not isinstance(features, list):
-            return response(400, {"error": "El campo 'features' debe ser una lista de números."})
+        # Input esperado:
+        # { "city": "Bogota", "features": { "temp": 17.14, "hum": 66, "pres": 1014, "wind": 2.24 } }
+        city = str(data.get("city", "")).strip()
+        feats = data.get("features", {})
+        try:
+            temp = float(feats.get("temp"))
+            hum = float(feats.get("hum"))
+            pres = float(feats.get("pres"))
+            wind = float(feats.get("wind"))
+        except (TypeError, ValueError):
+            return response(400, {"error": "features debe incluir temp, hum, pres, wind numéricos"})
 
-        result = infer(features)
+        temp_next = predict_temperature(city or "default", temp, hum, pres, wind)
+        cls = classify_weather(temp, hum, pres, wind)
 
-        if log_level.upper() == "DEBUG":
-            result["debug"] = {
-                "bias": BIAS,
-                "weights": WEIGHTS,
-                "features": features
+        out = {
+            "ok": True,
+            "result": {
+                "prediction": {
+                    "temperature_next": temp_next
+                },
+                "classification": cls if cls.get("enabled") else {"enabled": False}
             }
-
-        return response(200, {"ok": True, "result": result})
+        }
+        if os.environ.get("LOG_LEVEL", "INFO").upper() == "DEBUG":
+            out["debug"] = {
+                "city": city,
+                "features": {"temp": temp, "hum": hum, "pres": pres, "wind": wind}
+            }
+        return response(200, out)
     except json.JSONDecodeError:
-        return response(400, {"error": "Body no es JSON válido."})
+        return response(400, {"error": "Body no es JSON válido"})
     except Exception as e:
-        # Log minimal en body para CloudWatch facilidad
         return response(500, {"error": "Error interno", "detail": str(e)})

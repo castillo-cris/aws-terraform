@@ -13,4 +13,3 @@ variable "project_name" {
   description = "Nombre del proyecto"
   default     = "ml-infer-free-tier"
 }
-

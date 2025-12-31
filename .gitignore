@@ -10,3 +10,7 @@ lambda.zip
 
 # Crash logs
 crash.log
+
+# Ignorar logs y archivos temporales
+*.log
+*.tmp

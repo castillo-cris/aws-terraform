@@ -3,7 +3,7 @@ name: Deploy Lambda and API Gateway
 on:
   push:
     branches:
-      - main
+      - feature/backend-health
 
 jobs:
   deploy:
@@ -12,6 +12,12 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Prepare Lambda zip
+        run: |
+          cd lambda
+          zip -r ../lambda.zip handler.py model_temp.json model_class.json
+          cd ..
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -25,23 +31,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-2
 
-      - name: Package Lambda
-        run: zip lambda.zip lambda/handler.py lambda/model_config.json
-
       - name: Terraform Init
+        working-directory: infrastructure
         run: terraform init
 
       - name: Terraform Plan
+        working-directory: infrastructure
         run: terraform plan
 
       - name: Terraform Apply
+        working-directory: infrastructure
         run: terraform apply -auto-approve
 
-      - name: Invoke Lambda (test action)
+      - name: Get API endpoint
+        id: api
+        working-directory: infrastructure
         run: |
-          aws lambda invoke \
-            --function-name ml-infer-free-tier-inference \
-            --payload '{"features":[1.0,0.5,-0.2]}' \
-            --cli-binary-format raw-in-base64-out \
-            response.json
-          cat response.json
+          EP=$(terraform output -raw http_api_endpoint)
+          echo "endpoint=$EP" >> $GITHUB_OUTPUT
+
+      - name: Test HTTP inference
+        run: |
+          curl -s -X POST "${{ steps.api.outputs.endpoint }}/infer" \
+            -H "Content-Type: application/json" \
+            -d '{"city":"Bogota","features":{"temp":17.14,"hum":66,"pres":1014,"wind":2.24}}' | tee response_http.json
+
+      - name: Show response
+        run: cat response_http.json

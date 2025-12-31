@@ -47,7 +47,8 @@ jobs:
         id: api
         working-directory: infrastructure
         run: |
-          echo "endpoint=$(terraform output -raw http_api_endpoint)" >> $GITHUB_ENV
+          EP=$(terraform output -raw http_api_endpoint | head -n 1)
+          echo "endpoint=$EP" >> $GITHUB_OUTPUT
 
       - name: Test HTTP inference
         run: |
